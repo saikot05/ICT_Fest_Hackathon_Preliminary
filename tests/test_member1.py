@@ -80,7 +80,7 @@ def test_logout_token_revocation_and_refresh_rotation():
     # Second refresh call with same old refresh token -> 401
     refresh2 = client.post("/auth/refresh", json={"refresh_token": refresh_token})
     assert refresh2.status_code == 401
-    assert refresh2.json()["detail"] == "Token has been revoked"
+    assert refresh2.json()["detail"] == "Token has been revoked or used"
 
     # Access endpoint with new access token -> 200
     headers_new = {"Authorization": f"Bearer {new_access_token}"}
