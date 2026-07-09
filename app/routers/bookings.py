@@ -212,7 +212,7 @@ def cancel_booking(
     else:
         refund_percent = 0
 
-    refund_amount_cents = round(booking.price_cents * (refund_percent / 100.0))
+    refund_amount_cents = (booking.price_cents * refund_percent + 50) // 100
 
     log_refund(db, booking, refund_percent)
 
