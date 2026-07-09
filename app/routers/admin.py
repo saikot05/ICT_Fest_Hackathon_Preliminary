@@ -1,5 +1,5 @@
 """Administrative reporting and export endpoints."""
-from datetime import datetime, time, timedelta
+from datetime import datetime, time, timedelta, timezone
 
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import Response
@@ -32,8 +32,8 @@ def usage_report(
     except ValueError:
         raise AppError(400, "INVALID_BOOKING_WINDOW", "Invalid date range")
 
-    range_start = datetime.combine(from_date, time.min)
-    range_end = datetime.combine(to_date + timedelta(days=1), time.min)
+    parsed_from_date = datetime.combine(from_date, time.min, tzinfo=timezone.utc)
+    parsed_to_date = datetime.combine(to_date, time.min, tzinfo=timezone.utc)
 
     rooms = db.query(Room).filter(Room.org_id == admin.org_id).order_by(Room.id.asc()).all()
     room_rows = []
@@ -43,8 +43,8 @@ def usage_report(
             .filter(
                 Booking.room_id == room.id,
                 Booking.status == "confirmed",
-                Booking.start_time >= range_start,
-                Booking.start_time < range_end,
+                Booking.start_time >= parsed_from_date,
+                Booking.start_time < (parsed_to_date + timedelta(days=1)),
             )
             .all()
         )

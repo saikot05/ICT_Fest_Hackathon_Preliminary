@@ -83,7 +83,7 @@ def refresh(payload: RefreshRequest, db: Session = Depends(get_db)):
     
     jti = data.get("jti")
     if not jti or is_refresh_token_used(jti):
-        raise AppError(401, "UNAUTHORIZED", "Token has been revoked or used")
+        raise AppError(401, "UNAUTHORIZED", "Token has been revoked")
 
     user = db.query(User).filter(User.id == int(data["sub"])).first()
     if user is None:
