@@ -8,6 +8,8 @@ from ..auth import (
     decode_token,
     get_token_payload,
     hash_password,
+    is_refresh_token_used,
+    mark_refresh_token_used,
     revoke_access_token,
     verify_password,
 )
@@ -79,14 +81,15 @@ def refresh(payload: RefreshRequest, db: Session = Depends(get_db)):
     if data.get("type") != "refresh":
         raise AppError(401, "UNAUTHORIZED", "Wrong token type")
     
-    from ..auth import is_token_revoked, revoke_token
-    if is_token_revoked(data):
-        raise AppError(401, "UNAUTHORIZED", "Token has been revoked")
-    revoke_token(data)
+    jti = data.get("jti")
+    if not jti or is_refresh_token_used(jti):
+        raise AppError(401, "UNAUTHORIZED", "Token has been revoked or used")
 
     user = db.query(User).filter(User.id == int(data["sub"])).first()
     if user is None:
         raise AppError(401, "UNAUTHORIZED", "Unknown user")
+    
+    mark_refresh_token_used(jti)
     return {
         "access_token": create_access_token(user),
         "refresh_token": create_refresh_token(user),

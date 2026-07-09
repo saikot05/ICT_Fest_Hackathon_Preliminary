@@ -22,6 +22,7 @@ from .models import User
 # Access tokens presented to /auth/logout are recorded here so they can no
 # longer be used.
 _revoked_tokens: set[str] = set()
+_used_refresh_tokens: set[str] = set()
 
 _PBKDF2_ROUNDS = 100_000
 
@@ -122,3 +123,11 @@ def require_admin(user: User = Depends(get_current_user)) -> User:
     if user.role != "admin":
         raise AppError(403, "FORBIDDEN", "Admin privileges required")
     return user
+
+
+def is_refresh_token_used(jti: str) -> bool:
+    return jti in _used_refresh_tokens
+
+
+def mark_refresh_token_used(jti: str) -> None:
+    _used_refresh_tokens.add(jti)
