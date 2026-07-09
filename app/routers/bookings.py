@@ -1,5 +1,6 @@
 """Booking creation, listing, detail and cancellation."""
 import time
+from typing import cast
 from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, Query
@@ -47,7 +48,7 @@ def _has_conflict(db: Session, room_id: int, start: datetime, end: datetime) -> 
     )
     _pricing_warmup()
     for b in existing:
-        if b.start_time <= end and start <= b.end_time:
+        if b.start_time < end and start < b.end_time:
             return True
     return False
 
@@ -77,7 +78,7 @@ def create_booking(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    ratelimit.record_and_check(user.id)
+    ratelimit.record_and_check(cast(int, user.id))
 
     start = parse_input_datetime(payload.start_time)
     end = parse_input_datetime(payload.end_time)
@@ -97,12 +98,12 @@ def create_booking(
     if room is None:
         raise AppError(404, "ROOM_NOT_FOUND", "Room not found")
 
-    if _has_conflict(db, room.id, start, end):
+    if _has_conflict(db, payload.room_id, start, end):
         raise AppError(409, "ROOM_CONFLICT", "Room already booked for this interval")
 
-    _check_quota(db, user.id, now, start)
+    _check_quota(db, cast(int, user.id), now, start)
 
-    price_cents = room.hourly_rate_cents * duration_hours
+    price_cents = cast(int, room.hourly_rate_cents) * duration_hours
     booking = Booking(
         room_id=room.id,
         user_id=user.id,
@@ -117,8 +118,8 @@ def create_booking(
     db.commit()
     db.refresh(booking)
 
-    stats.record_create(room.id, price_cents)
-    cache.invalidate_availability(room.id, start.date().isoformat())
+    stats.record_create(cast(int, room.id), price_cents)
+    cache.invalidate_availability(cast(int, room.id), start.date().isoformat())
     notifications.notify_created(booking)
 
     return serialize_booking(booking)
@@ -135,8 +136,8 @@ def list_bookings(
     total = base.count()
     items = (
         base.order_by(Booking.start_time.desc(), Booking.id.asc())
-        .offset(page * limit)
-        .limit(10)
+        .offset((page - 1) * limit)
+        .limit(limit)
         .all()
     )
     return {
@@ -163,12 +164,12 @@ def get_booking(
         raise AppError(404, "BOOKING_NOT_FOUND", "Booking not found")
 
     response = serialize_booking(booking)
-    response["start_time"] = iso_utc(booking.created_at)
+    response["created_at"] = iso_utc(cast(datetime, booking.created_at))
     response["refunds"] = [
         {
             "amount_cents": r.amount_cents,
             "status": r.status,
-            "processed_at": iso_utc(r.processed_at),
+            "processed_at": iso_utc(cast(datetime, r.processed_at)),
         }
         for r in booking.refunds
     ]
@@ -203,18 +204,18 @@ def cancel_booking(
     elif notice >= timedelta(hours=24):
         refund_percent = 50
     else:
-        refund_percent = 50
+        refund_percent = 0
 
-    refund_amount_cents = round(booking.price_cents * (refund_percent / 100.0))
+    refund_amount_cents = round(cast(int, booking.price_cents) * (refund_percent / 100.0))
 
     log_refund(db, booking, refund_percent)
 
     _settlement_pause()
-    booking.status = "cancelled"
+    booking.status = "cancelled"  # type: ignore
     db.commit()
 
-    stats.record_cancel(booking.room_id, booking.price_cents)
-    cache.invalidate_report(user.org_id)
+    stats.record_cancel(cast(int, booking.room_id), cast(int, booking.price_cents))
+    cache.invalidate_report(cast(int, user.org_id))
     notifications.notify_cancelled(booking)
 
     return {

@@ -5,6 +5,7 @@ applicable notice tier, then written to the refund ledger with a processed
 status. Amounts are stored in whole cents.
 """
 from datetime import datetime
+from typing import cast
 
 from sqlalchemy.orm import Session
 
@@ -12,7 +13,8 @@ from ..models import Booking, RefundLog
 
 
 def log_refund(db: Session, booking: Booking, percent: int) -> RefundLog:
-    dollars = booking.price_cents / 100.0
+    price_cents = cast(int, booking.price_cents)
+    dollars = price_cents / 100.0
     refund_dollars = dollars * (percent / 100.0)
     amount_cents = int(refund_dollars * 100)
     entry = RefundLog(
