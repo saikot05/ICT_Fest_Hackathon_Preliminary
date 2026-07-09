@@ -92,7 +92,14 @@ def create_booking(
     if start <= now:
         raise AppError(400, "INVALID_BOOKING_WINDOW", "start_time must be in the future")
 
-    duration_hours = (end - start).total_seconds() / 3600
+    if end <= start:
+        raise AppError(400, "INVALID_BOOKING_WINDOW", "end_time must be after start_time")
+
+    duration_seconds = (end - start).total_seconds()
+    if duration_seconds < MIN_DURATION_HOURS * 3600:
+        raise AppError(400, "INVALID_BOOKING_WINDOW", "duration must be at least 1 hour")
+
+    duration_hours = duration_seconds / 3600
     if duration_hours != int(duration_hours):
         raise AppError(400, "INVALID_BOOKING_WINDOW", "duration must be a whole number of hours")
     duration_hours = int(duration_hours)
@@ -167,6 +174,8 @@ def get_booking(
         .first()
     )
     if booking is None:
+        raise AppError(404, "BOOKING_NOT_FOUND", "Booking not found")
+    if user.role != "admin" and booking.user_id != user.id:
         raise AppError(404, "BOOKING_NOT_FOUND", "Booking not found")
 
     if user.role != "admin" and booking.user_id != user.id:
