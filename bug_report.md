@@ -1,46 +1,88 @@
-# CoWork API: Bug Report
+# CoWork API: Comprehensive Bug Report
 
-This document outlines the bugs identified and fixed in the CoWork API implementation to adhere to the Hackathon Business Rules and API contract. Our team resolved these bugs through combined efforts across multiple branches (including concurrency issues, business logic fixes, and database isolation).
+This document outlines the bugs identified and fixed in the CoWork API implementation to strictly adhere to the Hackathon Business Rules and API contract. Our team resolved these bugs through combined efforts, addressing severe concurrency issues, multi-tenancy leaks, logical validation errors, and refund miscalculations.
 
-## 1. Concurrency and Rate Limiting (`app/services/ratelimit.py`)
-- **Bug**: The sliding window rate limiter was not thread-safe. Concurrent requests from the same user could bypass the 20 requests/60s limit (Rule 5) due to a race condition when modifying the `_buckets` dictionary.
-- **Fix**: Introduced a `threading.Lock()` (`with _lock:`) inside the `record_and_check` function to ensure that reading, pruning, and appending to the rate-limit bucket is atomic.
+## Booking Flow & Refund Engine Fixes
 
-## 2. Database Isolation & Double-Booking Concurrency (`app/database.py` / `app/routers/bookings.py`)
-- **Bug**: Concurrent booking requests for the same room and overlapping time slots could slip past the conflict checker (Rule 3) because SQLite's default isolation allowed read-modify-write races.
-- **Fix**: Adjusted the database transaction isolation level (e.g., using `WAL` mode and `BEGIN IMMEDIATE` or locking) to ensure strict serializability when validating overlapping times.
+### 1. Strict Future Start-Time Check (`app/routers/bookings.py`)
+- **Bug**: The `create_booking` endpoint allowed a grace period for bookings, violating Rule 2.
+- **Fix**: Removed the grace period and enforced a strict `start <= now` check, guaranteeing that booking start times must be strictly in the future.
 
-## 3. SQLAlchemy Type Constraints & Warnings (`app/models.py` / API Routers)
-- **Bug**: Static type mismatches and runtime conversion errors occurred when trying to pass SQLAlchemy model attributes (like `admin.org_id` or `booking.price_cents`) into functions expecting strict `int` values. Using `int()` triggered Pyright/Pyrefly `InstrumentedAttribute` errors.
-- **Fix**: Replaced runtime `int()` conversions with `typing.cast(int, ...)` across `admin.py`, `bookings.py`, and `refunds.py` to correctly satisfy both the type checker and runtime execution without errors.
+### 2. Booking Duration Validation (`app/routers/bookings.py`)
+- **Bug**: Bookings could be created with invalid durations or negative time slots.
+- **Fix**: Added validation to throw `INVALID_BOOKING_WINDOW` if `end <= start` or if the booking duration is less than 1 hour (violating Rule 2).
 
-## 4. Refund Calculation Rounding (`app/services/refunds.py` & `app/routers/bookings.py`)
-- **Bug**: The cancellation refund policy (Rule 6) requires half-cents to round up (e.g., 50% of 1001 = 501). The original logic was using standard division which caused truncation or incorrect rounding.
-- **Fix**: Fixed the mathematical logic to properly round half-cents up using `(price_cents * refund_percent + 50) // 100` instead of floating point math.
+### 3. Back-to-Back Booking Overlap (`app/routers/bookings.py`)
+- **Bug**: The `_has_conflict` function incorrectly rejected back-to-back bookings by using inclusive `<=` and `>=` operators.
+- **Fix**: Changed the overlap operators to strictly less than (`<`), satisfying Rule 3 which explicitly allows back-to-back bookings.
 
-## 5. Refresh Token Single-Use & Revocation (`app/routers/auth.py`)
-- **Bug**: Refresh tokens were not properly invalidated after a single use (Rule 8), allowing a refresh token to be reused continuously to generate new access tokens.
-- **Fix**: Implemented logic in the `/auth/refresh` endpoint to mark the `jti` of the used refresh token as revoked/used, raising a `401 UNAUTHORIZED` upon reuse.
+### 4. Booking Pagination & Ordering (`app/routers/bookings.py`)
+- **Bug**: `list_bookings` failed to properly paginate and sort results (Rule 11).
+- **Fix**: Implemented sorting by `start_time` (ascending), then `id` (ascending). Replaced the hardcoded limit of 10 with a dynamic `limit` parameter, and fixed the offset calculation to `(page - 1) * limit`.
 
-## 6. Access Token Lifespan (`app/auth.py`)
-- **Bug**: The access token expiration time did not strictly adhere to the 900 seconds (15 minutes) requirement specified in Rule 8.
-- **Fix**: Adjusted the JWT generation payload to ensure `exp - iat` exactly equals 900 seconds for access tokens.
+### 5. Booking Visibility for Members (`app/routers/bookings.py`)
+- **Bug**: Members could potentially read bookings belonging to other members, violating Rule 10.
+- **Fix**: Updated `get_booking` to explicitly check `user.role == "admin" or booking.user_id == user.id`. Non-compliant access now strictly returns `404 BOOKING_NOT_FOUND`.
 
-## 7. Username Duplication Scope (`app/routers/auth.py` & `app/models.py`)
-- **Bug**: The API prevented creating identical usernames globally across the entire system. However, Rule 15 states that usernames only need to be unique *within* the organization.
-- **Fix**: Added a `UniqueConstraint("org_id", "username")` in the `User` model and updated the `POST /auth/register` logic to correctly scope the duplicate username check (409 USERNAME TAKEN) by `org_id`.
+### 6. Booking Start Time Overwrite (`app/routers/bookings.py`)
+- **Bug**: A logical bug inside `get_booking` mistakenly overwrote the booking's `start_time` with its `created_at` timestamp.
+- **Fix**: Removed the offending line that overwrote the start time.
 
-## 8. Datetime Offset & UTC Handling (`app/routers/bookings.py`)
-- **Bug**: The `utcnow()` method was causing deprecation warnings and failing to properly handle timezone-aware/naive comparisons for bookings (Rule 1 & Rule 2).
-- **Fix**: Changed datetime instantiations to use timezone-aware UTC objects (`datetime.now(timezone.utc)`) and normalized naive inputs to UTC before comparing them to prevent "INVALID_BOOKING_WINDOW" edge cases.
+### 7. Refund Notice Period Tiers (`app/routers/bookings.py`)
+- **Bug**: The refund tier boundaries (Rule 6) were incorrectly mapped (e.g., failing to provide 100% refund for exactly 48 hours notice, and providing 50% instead of 0% for <24 hours).
+- **Fix**: Corrected the boundary check to `>= 48 hours` for 100% refund, and updated the `< 24 hours` else block to return 0% refund.
 
-## 9. Booking Visibility & Multi-tenancy (`app/routers/bookings.py`)
-- **Bug**: A member could potentially read another member's booking, or an admin could view data across organizations, violating Rule 9 (Multi-tenancy) and Rule 10 (Visibility).
-- **Fix**: Secured the query filters in `GET /bookings` and `GET /bookings/{id}` to mandate that `booking.user_id == caller.id` for members, and `room.org_id == caller.org_id` for admins. Unrelated bookings now correctly throw a `404`.
+### 8. Refund Cent Rounding (`app/services/refunds.py` & `app/routers/bookings.py`)
+- **Bug**: 50% refunds were using standard floating-point division, causing half-cents to truncate instead of round up.
+- **Fix**: Replaced division with integer arithmetic `(price_cents * refund_percent + 50) // 100` to guarantee half-cents are correctly rounded up.
 
-## 10. Reference Code Concurrency (`app/services/reference.py`)
-- **Bug**: Reference codes generated simultaneously by concurrent requests could result in duplicates, violating Rule 7.
-- **Fix**: Strengthened the reference code generation utility to ensure thread safety and strict uniqueness.
+### 9. Cache Invalidation (`app/routers/bookings.py`)
+- **Bug**: Creating and cancelling bookings did not properly invalidate the cache, leading to stale reports.
+- **Fix**: Added `cache.invalidate_report(org_id)` on booking creation, and `cache.invalidate_availability(...)` on cancellation to ensure data freshness.
 
 ---
-**Summary**: All business rules (1 through 16) have been rigorously verified by passing 32/32 tests in the automated smoke test suite.
+
+## Concurrency, Multi-Tenancy & Data Consistency Fixes
+
+### 10. Server Liveness & Deadlocks (`app/services/notifications.py`)
+- **Bug**: A critical server hang vulnerability existed due to nested thread locks (`_email_lock` and `_audit_lock`) inside `notify_created` and `notify_cancelled`. 
+- **Fix**: Un-nested the locks. They are now acquired and released sequentially, guaranteeing server liveness under concurrent loads (Rule 16).
+
+### 11. Thread-Safe Rate Limiting (`app/services/ratelimit.py`)
+- **Bug**: A race condition allowed users to bypass the 20-request/60-second limit (Rule 5).
+- **Fix**: Wrapped the rate limit timestamp tracking and cleanup logic inside a `threading.Lock()` to ensure strict enforcement during concurrent bursts.
+
+### 12. Unique Reference Code Generation (`app/services/reference.py`)
+- **Bug**: Concurrent requests could generate duplicate booking reference IDs, violating Rule 7.
+- **Fix**: Synchronized the sequential ID counter with a global thread lock, guaranteeing perfectly unique reference codes.
+
+### 13. Data Accuracy & Live Statistics (`app/services/stats.py` & `app/routers/rooms.py`)
+- **Bug**: Room statistics were relying on desynced in-memory state, leading to inconsistent counts (Rule 14).
+- **Fix**: Restructured `stats.get` to query the SQLite database directly using SQLAlchemy's `func.count` and `func.sum`. Used `coalesce` to handle `None` sums, ensuring accurate integer returns.
+
+### 14. Admin Export Isolation (`app/routers/admin.py`)
+- **Bug**: `GET /admin/export` failed to enforce strict multi-tenancy, allowing cross-tenant data access.
+- **Fix**: Added validation to check if the requested `room_id` strictly belongs to the authenticated admin's `org_id`, raising `404 ROOM_NOT_FOUND` on violations.
+
+### 15. Report Datetime Boundary Inclusivity (`app/routers/admin.py`)
+- **Bug**: The `GET /admin/usage-report` logic failed to include bookings for the entirety of the `to` date.
+- **Fix**: Corrected the logic to parse `from` and `to` query parameters into timezone-aware UTC datetime objects. Extended the upper boundary filter to `parsed_to_date + timedelta(days=1)`.
+
+---
+
+## Architecture & Database Level Fixes
+
+### 16. Database Transaction Isolation (`app/database.py`)
+- **Bug**: SQLite's default transaction isolation allowed read-modify-write races, meaning overlapping double-bookings could bypass the conflict checker under load.
+- **Fix**: Configured SQLite with `PRAGMA journal_mode=WAL` and adjusted transaction boundaries to prevent concurrent write races.
+
+### 17. SQLAlchemy Type Constraints & Warnings
+- **Bug**: Static type mismatches occurred when passing SQLAlchemy `InstrumentedAttribute` properties into functions expecting strictly `int` types. Using `int()` caused further type-checker errors.
+- **Fix**: Replaced runtime `int()` conversions with `typing.cast(int, ...)` across `admin.py`, `bookings.py`, and `refunds.py` to correctly satisfy static analysis while preserving execution speed.
+
+### 18. Authentication & Multi-Tenancy Flaws (`app/routers/auth.py` & `app/models.py`)
+- **Bug**: Access tokens didn't strictly expire at 900 seconds; Refresh tokens lacked single-use revocation; Usernames were required to be globally unique instead of organization-scoped.
+- **Fix**: 
+  - Adjusted JWT generation for exact 900-second access lifespans.
+  - Implemented single-use refresh token revocation (JTI checking).
+  - Scoped the unique constraint for usernames down to `org_id`.
