@@ -1,5 +1,6 @@
 """Administrative reporting and export endpoints."""
 from datetime import datetime, time, timedelta, timezone
+from typing import cast
 
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import Response
@@ -22,7 +23,7 @@ def usage_report(
     db: Session = Depends(get_db),
     admin: User = Depends(require_admin),
 ):
-    cached = cache.get_report(admin.org_id, frm, to)
+    cached = cache.get_report(cast(int, admin.org_id), frm, to)
     if cached is not None:
         return cached
 
@@ -58,7 +59,7 @@ def usage_report(
         )
 
     result = {"from": frm, "to": to, "rooms": room_rows}
-    cache.set_report(admin.org_id, frm, to, result)
+    cache.set_report(cast(int, admin.org_id), frm, to, result)
     return result
 
 
@@ -74,5 +75,5 @@ def export(
         if room is None or room.org_id != admin.org_id:
             raise AppError(404, "ROOM_NOT_FOUND", "Room not found")
 
-    csv_body = generate_export(db, admin.org_id, admin.id, room_id, include_all)
+    csv_body = generate_export(db, cast(int, admin.org_id), cast(int, admin.id), room_id, include_all)
     return Response(content=csv_body, media_type="text/csv")

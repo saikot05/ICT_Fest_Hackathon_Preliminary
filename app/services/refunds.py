@@ -4,7 +4,7 @@ When a booking is cancelled a refund is calculated from its price and the
 applicable notice tier, then written to the refund ledger with a processed
 status. Amounts are stored in whole cents.
 """
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import cast
 
 from sqlalchemy.orm import Session
